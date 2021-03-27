@@ -1,0 +1,459 @@
+import xarray as xr
+import numpy as np
+import matplotlib.pyplot as plt
+from datetime import datetime
+from netCDF4 import Dataset, num2date
+from siphon.catalog import TDSCatalog
+from siphon.ncss import NCSS
+from shapely.geometry import Point, Polygon
+from xarray.backends import NetCDF4DataStore
+import xarray as xr
+import metpy.calc as mpcalc
+from metpy.units import units
+import numpy as np
+from metpy.plots import SkewT,Hodograph
+from metpy.units import units
+from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+import matplotlib.pyplot as plt
+from metpy.plots import SkewT,Hodograph
+from metpy.units import units
+from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+import sharppy
+import sharppy.sharptab.profile as profile
+import sharppy.sharptab.interp as interp
+import sharppy.sharptab.winds as winds
+import sharppy.sharptab.utils as utils
+import sharppy.sharptab.params as params
+import sharppy.sharptab.thermo as thermo
+import math
+import pandas as pd
+from scipy.ndimage import gaussian_filter
+import pygrib
+
+def sounding(file_name,out_parameter,out_vertical,year,month,day,hour,lat,lon):
+    dt = datetime(int(year), int(month), int(day), int(hour))
+    print(dt)
+    print()
+    
+    range1=input('Hodograph range: ')
+    
+    print()
+
+    def get_nearest_point(full_lat, full_lon, point_latitude, point_longitude):
+        full_lon -= 360.   # Converts the longitude so W in negative (just more normal convention)
+        a = np.sqrt( np.square(full_lon - point_longitude ) +  np.square(full_lat - point_latitude))
+        i,j = np.unravel_index(a.argmin(), a.shape)
+        return i, j
+# Load file with xarray as a dataset. The backend kwargs line consolidates the variables
+# that use isobaric pressure as the vertical corrdinate. You can remove that to get
+# all the variables, but its messy.
+
+    print('reading data...')
+    print()
+
+    # You need to give the full file path if the grb file is not in your current directory
+    data1 = xr.load_dataset(file_path, engine='cfgrib', backend_kwargs={'filter_by_keys':{'typeOfLevel': 'isobaricInhPa'}})
+    data2=xr.load_dataset(file_path,engine='cfgrib', backend_kwargs={'filter_by_keys':{'stepType': 'instant', 'typeOfLevel': 'surface'}})
+    data3=xr.load_dataset(file_path,engine='cfgrib', backend_kwargs={'filter_by_keys':{'stepType': 'instant', 'typeOfLevel': 'heightAboveGround'}})
+    data4=xr.load_dataset(file_path,engine='cfgrib', backend_kwargs={'filter_by_keys':{'stepType': 'instant', 'typeOfLevel': 'unknown'}})
+    
+    temp = data1.t       # Temperature variable
+    h = data1.gh          # Geopotential Height vairable
+    rh=data1.r                   # Relative Humidity
+    u=data1.u                    # U wind
+    v=data1.v                    # V wind
+    wind_speed=mpcalc.wind_speed(u,v) 
+    sfc_p=(data2.sp)/100               #sfc Pressure
+    h_sfc=data4.gh
+    
+    # Grab the coordinates variables
+    latitude, longitude, p = temp.latitude, temp.longitude, temp.isobaricInhPa
+
+    # Then use the function to find the appropiate index you want. Could be any lat lon point you want
+    # thats within the domain
+    point_lon, point_lat = get_nearest_point(latitude, longitude, lat,lon)
+    # Print to confirm we got that closest point.
+    print(latitude[point_lon, point_lat][...], longitude[point_lon, point_lat][...]) 
+
+    # Now use that lat-lon index to grab just that vertical section of the temperature array
+    t = (np.array(temp[:, point_lon, point_lat])*units('kelvin')).to('degC')
+    h = np.array(h[:, point_lon, point_lat])*units('m')
+    rh=np.array(rh[:, point_lon, point_lat])*units('percent')
+    u=np.array(u[:, point_lon, point_lat])*units('m/s')
+    v=np.array(v[:, point_lon, point_lat])*units('m/s')
+    wind_speed=np.array(wind_speed[:, point_lon, point_lat])
+    sfc_p=np.array(sfc_p[point_lon, point_lat])*units('hPa')
+    p=np.array(p)*units('hPa')
+
+    #to get a closer isobaric layer to the surfcace layer
+    if float(sfc_p.m)<=987. and float(sfc_p.m)>962.:
+        t=t[1:]
+        p=p[1:]
+        u=u[1:]
+        v=v[1:]
+        rh=rh[1:]
+        wind_speed=wind_speed[1:]
+        h=h[1:]
+    elif float(sfc_p.m)<=962. and float(sfc_p.m)>937.:
+        t=t[2:]
+        p=p[2:]
+        u=u[2:]
+        v=v[2:]
+        rh=rh[2:]
+        wind_speed=wind_speed[2:]
+        h=h[2:]     
+    elif float(sfc_p.m)<=937. and float(sfc_p.m)>912.:
+        t=t[3:]
+        p=p[3:]
+        u=u[3:]
+        v=v[3:]
+        rh=rh[3:]
+        wind_speed=wind_speed[3:]
+        h=h[3:]
+    elif float(sfc_p.m)<=912. and float(sfc_p.m)>887.:
+        t=t[4:]
+        p=p[4:]
+        u=u[4:]
+        v=v[4:]
+        rh=rh[4:]
+        wind_speed=wind_speed[4:]
+        h=h[4:]
+    elif float(sfc_p.m)<=887. and float(sfc_p.m)>862.:
+        t=t[6:]
+        p=p[6:]
+        u=u[6:]
+        v=v[6:]
+        rh=rh[6:]
+        wind_speed=wind_speed[6:]
+        h=h[6:]
+
+    print()    
+    print('Surface pressure:',np.around(sfc_p))
+    print('Using as surface pressure:',p[0])
+    print()
+
+     
+    out_parameter.write(str(np.around(sfc_p.m))+'\n'+str(p[0].m)+'\n')
+
+
+    ##calculating dewpoint from RH
+    td=mpcalc.dewpoint_from_relative_humidity(t,rh)
+        #print('dewpoint:',td)
+
+    ##calculating the parcel profile
+    prof=mpcalc.parcel_profile(p,t[0],td[0]).to('degC')
+        #print('parcel prof:',prof)
+
+    ##caculating potential temp
+    theta=mpcalc.potential_temperature(p,t).m
+
+    ##calculating mixing ratio using RH
+    R=mpcalc.mixing_ratio_from_relative_humidity(rh[:],t[:],p[:]).m
+
+
+    ##calcualte LFL
+    lcl_p,lcl_t=mpcalc.lcl(p[0],t[0],td[0]) 
+    out_parameter.write(str(np.around(lcl_p.m))+'\n')
+    print('LCL:',np.around(lcl_p))
+
+    ##calculate LFC
+    lfc_p,lfc_t=mpcalc.lfc(p,t,td,prof)
+    out_parameter.write(str(np.around(lfc_p.m))+'\n')
+    print('LFC:',np.around(lfc_p))
+
+    ##calcualte EL
+    el_p,el_t=mpcalc.el(p,t,td,prof)
+    out_parameter.write(str(np.around(el_p.m))+'\n')
+    print('EL:',np.around(el_p))
+
+    ##calcualting theta-e
+    thetaE=(mpcalc.equivalent_potential_temperature(p,t,td))
+    thetae_mean=np.mean(thetaE)
+
+    def sharppy_calc(p, h, t, td, u, v):
+
+        prof = profile.create_profile(profile='default', pres=p, hght=h, tmpc=t, dwpc=td, u=u, v=v, missing=-9999, strictQC=False)
+
+        sfcpcl = params.parcelx( prof, flag=1 ) # Surface Parcel
+        mupcl = params.parcelx( prof, flag=3 ) # Most-Unstable Parcel
+        mlpcl = params.parcelx( prof, flag=4 ) # 100 mb Mean Layer Parcel
+
+
+        sfc = prof.pres[prof.sfc]
+        p3km = interp.pres(prof, interp.to_msl(prof, 3000.))
+        p6km = interp.pres(prof, interp.to_msl(prof, 6000.))
+        p1km = interp.pres(prof, interp.to_msl(prof, 1000.))
+
+
+        print('Height of 0 C:',np.around(sfcpcl.hght0c),'m')
+        print('Height of -20 C:',np.around(sfcpcl.hghtm20c),'m')
+        out_parameter.write(str(np.around(sfcpcl.hght0c))+'\n'+str(np.around(sfcpcl.hghtm20c))
+                +'\n'+str(np.around(sfcpcl.hghtm20c))+'\n')
+
+        wetbulb=prof.wetbulb
+        indx=(np.abs(wetbulb-0.0)).argmin()
+        print('Wetbulb Zero Height:',h[indx].m,'m')
+
+        out_parameter.write(str(h[indx].m)+'\n')
+
+       # Calculate the 0-3 km pressure-weighted mean wind
+        mean_3km = winds.mean_wind(prof, pbot=sfc, ptop=p3km)
+        mean_6km = winds.mean_wind(prof, pbot=sfc, ptop=p6km)
+
+
+       # Calculate the 0-1, 0-3, and 0-6 km wind shear
+        sfc_6km_shear = winds.wind_shear(prof, pbot=sfc, ptop=p6km)
+        sfc_3km_shear = winds.wind_shear(prof, pbot=sfc, ptop=p3km)
+        sfc_1km_shear = winds.wind_shear(prof, pbot=sfc, ptop=p1km)
+        shear_6km = utils.comp2vec(sfc_6km_shear[0], sfc_6km_shear[1])[1]
+
+       # Calculate the Bunkers Storm Motion Left and Right mover vectors (these are returned in u,v space
+       # so let's transform them into wind speed and direction space.)
+        srwind = params.bunkers_storm_motion(prof)
+
+
+       # Calculate the storm-relative helicity using the right-movers
+        srh3km = winds.helicity(prof, 0, 3000., stu = srwind[0], stv = srwind[1])
+        srh1km = winds.helicity(prof, 0, 1000., stu = srwind[0], stv = srwind[1])
+
+       # and bottom of the layer.  We'll have to convert it from m MSL to m AGL.
+        eff_inflow = params.effective_inflow_layer(prof)
+        ebot_hght = interp.to_agl(prof, interp.hght(prof, eff_inflow[0]))
+        etop_hght = interp.to_agl(prof, interp.hght(prof, eff_inflow[1]))
+
+       # Like before, we can calculate the storm-relative helicity, but let's do it for the effective inflow layer.
+        effective_srh = winds.helicity(prof, ebot_hght, etop_hght, stu = srwind[0], stv = srwind[1])
+
+       # We can also calculate the Effective Bulk Wind Difference using the wind shear calculation and the inflow layer.
+        ebwd = winds.wind_shear(prof, pbot=eff_inflow[0], ptop=eff_inflow[1])
+        ebwspd = utils.mag( ebwd[0], ebwd[1] )
+
+       # Composite indices (e.g. STP, SCP, SHIP) can be calculated after determining the effective inflow layer.
+        scp = params.scp(mupcl.bplus, effective_srh[0], ebwspd)
+        stp_cin = params.stp_cin(mlpcl.bplus, effective_srh[0], ebwspd, mlpcl.lclhght, mlpcl.bminus)
+        stp_fixed = params.stp_fixed(sfcpcl.bplus, sfcpcl.lclhght, srh1km[0], utils.comp2vec(sfc_6km_shear[0], sfc_6km_shear[1])[1])
+
+
+        print('0-1 km SRH:',np.around(srh1km[0]), 'm2/s2')
+        print('0-1 km Shear:',np.around(utils.comp2vec(sfc_1km_shear[0], sfc_1km_shear[1])[1]), 'kts')
+        print('0-3 km SRH:',np.around(srh3km[0]), 'm2/s2')
+        print('0-3 km Shear:',np.around(utils.comp2vec(sfc_3km_shear[0], sfc_3km_shear[1])[1]), 'kts')
+        print('0-6 km Shear:',np.around(utils.comp2vec(sfc_6km_shear[0], sfc_6km_shear[1])[1]), 'kts')
+        print('SBCAPE:',np.around(sfcpcl.bplus), 'J/kg')
+        print('SBCIN:',np.around(sfcpcl.bminus), 'J/kg')
+        print('MLCAPE:',np.around(mlpcl.bplus),'J/kg')
+        print('MLCIN:',np.around(mlpcl.bminus),'J/kg')
+        print('MUCAPE:',np.around(mupcl.bplus),'J/kg')
+        print('MUCIN:',np.around(mupcl.bminus),'J/kg')
+        print('STP(fix):',np.around(stp_fixed), 'flt')
+        print('SCP:',np.around(scp), 'flt')
+        print('STP(cin):',np.around(stp_cin), 'flt')
+
+        out_parameter.write(str(np.around(srh1km[0]))+'\n'+str(np.around(utils.comp2vec(sfc_1km_shear[0], sfc_1km_shear[1])[1]))+
+                    '\n'+str(np.around(srh3km[0]))+'\n'+str(np.around(utils.comp2vec(sfc_3km_shear[0], sfc_3km_shear[1])[1]))+
+                    '\n'+str(np.around(utils.comp2vec(sfc_6km_shear[0], sfc_6km_shear[1])[1]))+'\n'+str(np.around(sfcpcl.bplus))+
+                    '\n'+str(np.around(sfcpcl.bminus))+'\n'+str(np.around(mlpcl.bplus))+'\n'+
+                   str(np.around(mlpcl.bminus))+'\n'+str(np.around(mupcl.bplus))+'\n'+
+                   str(np.around(mupcl.bminus))+'\n'+str(np.around(stp_fixed))+'\n'+str(np.around(scp))+'\n'+str(np.around(stp_cin))+'\n')
+
+
+            #definition for lapse rate
+        def lapse_rate(sfc_t,upper_t,sfc_h,upper_h):
+            y=-((upper_t-sfc_t)/(upper_h-sfc_h))*1000
+            return y
+
+        if len(p)==37:
+            #caclulates lapse rate for 0-1 (1000-900 hpa),0-2, (1000-800 hPa),0-3 (1000-700 hPa), 
+            # 0-6 (1000-500 hPa),3-6 km (700-500 hPa) lapse rate,and average rh from 700-400 hpa
+            lapse1=(lapse_rate(t[0],t[4],h[0],h[4]))
+            lapse2=(lapse_rate(t[0],t[8],h[0],h[8]))
+            lapse3=(lapse_rate(t[0],t[12],h[0],h[12]))
+            lapse6=(lapse_rate(t[0],t[20],h[0],h[20]))
+            lapse3_6=(lapse_rate(t[12],t[20],h[12],h[20]))
+            avgrh=np.mean(rh[12:21])
+        elif len(p)==36:
+            lapse1=(lapse_rate(t[0],t[3],h[0],h[3]))
+            lapse2=(lapse_rate(t[0],t[7],h[0],h[7]))
+            lapse3=(lapse_rate(t[0],t[11],h[0],h[11]))
+            lapse6=(lapse_rate(t[0],t[19],h[0],h[19]))
+            lapse3_6=(lapse_rate(t[11],t[19],h[11],h[19]))
+            avgrh=np.mean(rh[11:20])
+        elif len(p)==35:
+            lapse1=(lapse_rate(t[0],t[2],h[0],h[2]))
+            lapse2=(lapse_rate(t[0],t[6],h[0],h[6]))
+            lapse3=(lapse_rate(t[0],t[10],h[0],h[10]))
+            lapse6=(lapse_rate(t[0],t[18],h[0],h[18]))
+            lapse3_6=(lapse_rate(t[10],t[18],h[10],h[18]))
+            avgrh=np.mean(rh[10:19])
+        elif len(p)==34:
+            lapse1=(lapse_rate(t[0],t[1],h[0],h[1]))
+            lapse2=(lapse_rate(t[0],t[5],h[0],h[5]))
+            lapse3=(lapse_rate(t[0],t[9],h[0],h[9]))
+            lapse6=(lapse_rate(t[0],t[17],h[0],h[17]))
+            lapse3_6=(lapse_rate(t[9],t[17],h[9],h[17]))
+            avgrh=np.mean(rh[9:18])
+        elif len(p)==33:
+            lapse1=(lapse_rate(t[0],t[0],h[0],h[0]))
+            lapse2=(lapse_rate(t[0],t[4],h[0],h[4]))
+            lapse3=(lapse_rate(t[0],t[8],h[0],h[8]))
+            lapse6=(lapse_rate(t[0],t[16],h[0],h[16]))
+            lapse3_6=(lapse_rate(t[8],t[16],h[8],h[16]))
+            avgrh=np.mean(rh[8:17])
+        elif len(p)==32:
+            lapse1=(lapse_rate(t[0],t[0],h[0],h[0]))
+            lapse2=(lapse_rate(t[0],t[3],h[0],h[3]))
+            lapse3=(lapse_rate(t[0],t[7],h[0],h[7]))
+            lapse6=(lapse_rate(t[0],t[15],h[0],h[15]))
+            lapse3_6=(lapse_rate(t[7],t[15],h[7],h[15]))
+            avgrh=np.mean(rh[7:16])
+        elif len(p)==31:
+            lapse1=(lapse_rate(t[0],t[0],h[0],h[0]))
+            lapse2=(lapse_rate(t[0],t[2],h[0],h[2]))
+            lapse3=(lapse_rate(t[0],t[6],h[0],h[6]))
+            lapse6=(lapse_rate(t[0],t[14],h[0],h[14]))
+            lapse3_6=(lapse_rate(t[6],t[14],h[6],h[14]))
+            avgrh=np.mean(rh[6:15])
+        elif len(p)==30:
+            lapse1=(lapse_rate(t[0],t[0],h[0],h[0]))
+            lapse2=(lapse_rate(t[0],t[1],h[0],h[1]))
+            lapse3=(lapse_rate(t[0],t[5],h[0],h[5]))
+            lapse6=(lapse_rate(t[0],t[13],h[0],h[13]))
+            lapse3_6=(lapse_rate(t[5],t[13],h[5],h[13]))
+            avgrh=np.mean(rh[5:14])
+
+
+        print('0-1 km lapse rate:',lapse1.m,'C/km') 
+        print('0-2 km lapse rate:',lapse2.m,'C/km')    
+        print('0-3 km lapse rate:',lapse3.m,'C/km') 
+        print('0-6 km lapse rate:',lapse6.m,'C/km')
+        print('3-6 km lapse rate:',lapse3_6.m,'C/km')
+        print('Avgerage 700-400 hPa RH:',avgrh.m,'%')
+
+        out_parameter.write(str(lapse1.m)+'\n'+str(lapse2.m)+'\n'+str(lapse3.m)+'\n'+str(lapse6.m)+'\n'+
+                       str(lapse3_6.m)+'\n'+str(avgrh.m)+'\n')
+
+            #converts lapse rates to float and demensionless
+        new_lapse3=float(lapse3.m) 
+        new_lapse6=float(lapse6.m)
+        new_lapse3_6=float(lapse3_6.m)
+
+            #calcualte sherb parameter
+            # 0-3km shear/26 * 0-3km lapse rate/5.2 * 3-6km lapse rate/5.6
+        sherb=(((utils.comp2vec(sfc_3km_shear[0], sfc_3km_shear[1])[1])/26)*((new_lapse3/5.2)*((new_lapse3_6/5.6))))
+        print('SHERB:',(sherb)) 
+
+        out_parameter.write(str((sherb))+'\n')
+    
+    #Calls the defintion to calculate parameters using sharpy      
+    sharppy_calc(p, h, t, td, u, v)
+
+        #Theta-E parameters
+    sfc_thetaE=np.around(thetaE[0].to('kelvin'))
+    ml_thetaE=np.around(np.mean(thetaE[0:5]).to('kelvin'))
+
+    print('Surface Theta-E:',sfc_thetaE.m,)
+    print("ML Theta-E:",ml_thetaE.m,)
+
+    out_parameter.write(str(sfc_thetaE.m)+'\n'+str(ml_thetaE.m)+'\n')
+
+
+
+
+    dcape_array=[]
+    for i in range(0,14,1):
+        if i==14:
+            dcape=0
+        else:
+            dcape=-9.81*((prof[i]-t[0])/(t[i]))*(abs(h[i+1]-h[i]))
+            dcape_array.append(dcape)
+
+
+    dcape_sum=sum(dcape_array)
+    print('DCAPE:',np.around(dcape_sum.m),'J/kg')
+
+    out_parameter.write(str(np.around(dcape_sum.m)))
+
+
+
+
+    print()
+    print('********************')
+    print()
+    print('creating sounding...')
+
+
+    out_vertical.write('Height'+'\t''Pressure'+'\t'+'Temp'+'\t'+'Dew'+'\t'+'Profile'+'\t'+'U'+'\t'+'V'+'\t'+'Wind Speed'+'\n'+
+               str(h_sfc)+'\n')
+
+
+    for i in range (1,len(p)):
+        out_vertical.write(str(np.array(np.around(h[i]).astype('float64')))+'\t'+str(np.array(p[i].astype('float64')))+'\t'+
+                str(np.array(t[i].astype('float64')))+'\t'+str(np.array(td[i].astype('float64')))+'\t'+
+                str(np.array(prof[i].astype('float64')))+'\t'+str(np.array(u[i].astype('float64')))+'\t'+
+                str(np.array(v[i].astype('float64')))+'\t'+str(np.array(wind_speed[i].astype('float64')))+'\n')
+
+
+
+
+
+    ##Change default to be better for skew-T
+    fig = plt.figure(figsize=(10,10))
+    skew = SkewT(fig,rotation=45)
+
+    ##Plot the data using normal plotting functions, in this case using
+    ##log scaling in Y, as dictated by the typical meteorological plot
+    skew.plot(p, t, 'r')
+    skew.plot(p, td, 'g')
+    skew.plot_barbs(p[:-1:2], u[:-1:2], v[:-1:2])
+
+    ##Add the relevant special lines
+    skew.plot_dry_adiabats(t0=np.arange(233,533,10)*units('K'),alpha=0.25)
+    skew.plot_moist_adiabats(t0=np.arange(233,323,5)*units('K'),alpha=0.25)
+    skew.plot_mixing_lines(alpha=0.25)
+    skew.ax.set_ylim(1000, 100)
+    skew.ax.set_xlim(-40,40)
+
+    ##Calculate full parcel profile and add to plot as black line
+    ##Requires that the variables have associated units
+        #prof = mpcalc.parcel_profile(p, t[0], td[0]).to('degC')
+    skew.plot(p, prof, 'k', linewidth=2)
+
+
+    ##this will add a line and place where the LCL is located
+    skew.plot(lcl_p,lcl_t.to('degC'), marker='_',  markersize=22, color='blue')
+    plt.text(lcl_t.to('degC').m+5,lcl_p.m+20,'LCL',color='blue',size=14)
+
+    ##this will add a line and place where the LFC is located
+    skew.plot(lfc_p,lfc_t.to('degC'), marker='_',  markersize=22, color='blue')
+    plt.text(lfc_t.to('degC').m+5,lfc_p.m+20,'LFC',color='blue',size=14)
+
+    ##this will add a line and place where the EL is located
+    skew.plot(el_p,el_t.to('degC'), marker='_',  markersize=22, color='blue')
+    plt.text(el_t.to('degC').m+5,el_p.m+20,'EL',color='blue',size=14)
+
+
+    ##Make some titles
+    plt.title('Lat:'+str(lat)+' Lon:'+str(lon),loc='left')
+    plt.title(dt,loc='right') 
+
+    
+    # Create a hodograph
+    mask=((np.array(h)*units.m)/100)<=10*units.km
+    intervals = np.array([0, 1, 3, 6, 8, 10, 12]) * units.km
+    colors=['purple','indigo','mediumblue','royalblue','cornflowerblue','skyblue']
+    ax_hod = inset_axes(skew.ax, '30%', '30%', loc=1)
+    ho = Hodograph(ax_hod, component_range=float(range1))
+    ho.add_grid(increment=10)
+    ho.plot_colormapped(u[mask], v[mask], h[mask], intervals=intervals, colors=colors)
+    
+
+    ##show the plot
+    plt.tight_layout()
+    plt.savefig(str(dt)+'.png',dpi=150)
+    plt.show()
+
+    out_parameter.close()
+    out_vertical.close()
+    
+    #Call the definition
+    sounding(file_name,out_parameter,out_vertical,year,month,day,hour,lat,lon)
